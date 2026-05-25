@@ -1,31 +1,27 @@
-// paper-trader.js - Simulación con TP 20% (vende 50%) y TP 30% (vende resto)
+// paper-trader.js - Simulación de trading con capital virtual
 // Reglas:
-// - TP1 (+20%): vender 50% de la posición original
-// - TP2 (+30%): vender el 50% restante (todo lo que quede)
+// - TP1 (+20%): vende el 50% de la posición original
+// - TP2 (+30%): vende el resto (50% restante)
 // - Stop loss fijo: -15% desde entrada (cierra todo)
 // - Trailing stop: -5% desde máximo (solo si ha subido al menos +5% desde entrada)
 // - Capital inicial: 500 USDC
-// - Tamaño por operación: 30 USDC
+// - Inversión por señal: 30 USDC fijos
 
 const INITIAL_BALANCE = 500.00;
-const POSITION_SIZE = 30.00;           // 30 USDC por operación
+const POSITION_SIZE = 30.00;
 
-// Take profits
-const TP1_PERCENT = 0.20;              // +20%
-const TP1_SELL_FRACTION = 0.50;        // vender el 50% de la posición ORIGINAL (la mitad)
-const TP2_PERCENT = 0.30;              // +30%
-// En TP2 se vende todo lo que quede (el otro 50% original, o lo que haya tras TP1)
+const TP1_PERCENT = 0.20;
+const TP1_SELL_FRACTION = 0.50;
+const TP2_PERCENT = 0.30;
 
-// Stops
-const STOP_LOSS_PERCENT = 0.15;        // -15% fijo desde entrada
-const TRAILING_PERCENT = 0.05;         // -5% trailing desde máximo
-const MIN_GAIN_TO_TRAIL = 0.05;        // mínimo +5% para activar trailing
+const STOP_LOSS_PERCENT = 0.15;
+const TRAILING_PERCENT = 0.05;
+const MIN_GAIN_TO_TRAIL = 0.05;
 
 let balance = INITIAL_BALANCE;
 let activePositions = [];
 let completedTrades = [];
 
-// Abrir nueva posición simulada
 async function openPaperPosition(tokenMint, tokenSymbol, entryPriceUSDC, txSignature) {
     const quantity = POSITION_SIZE / entryPriceUSDC;
     if (POSITION_SIZE > balance) {
@@ -36,8 +32,8 @@ async function openPaperPosition(tokenMint, tokenSymbol, entryPriceUSDC, txSigna
         id: Date.now(),
         tokenMint,
         tokenSymbol,
-        quantity,               // cantidad total inicial
-        originalQuantity: quantity,  // guardamos la cantidad original para TP1
+        quantity,
+        originalQuantity: quantity,
         entryPrice: entryPriceUSDC,
         initialValue: POSITION_SIZE,
         highestPrice: entryPriceUSDC,
@@ -52,7 +48,6 @@ async function openPaperPosition(tokenMint, tokenSymbol, entryPriceUSDC, txSigna
     return true;
 }
 
-// Actualizar posiciones con precios actuales
 async function updatePositions(currentPrices) {
     const events = [];
     for (let i = 0; i < activePositions.length; i++) {
@@ -60,7 +55,6 @@ async function updatePositions(currentPrices) {
         const currentPrice = currentPrices[pos.tokenMint];
         if (!currentPrice) continue;
 
-        // Actualizar precio máximo
         if (currentPrice > pos.highestPrice) pos.highestPrice = currentPrice;
 
         const fixedStopPrice = pos.entryPrice * (1 - STOP_LOSS_PERCENT);
@@ -72,25 +66,17 @@ async function updatePositions(currentPrices) {
         let reason = '';
         let totalProfit = 0;
 
-        // ---- TP1: +20% -> vender el 50% de la posición ORIGINAL ----
+        // TP1: +20% vender 50% del original
         if (!pos.tp1Hit && currentPrice >= pos.entryPrice * (1 + TP1_PERCENT)) {
-            // La cantidad a vender es el 50% de la cantidad original
             const sellQty = pos.originalQuantity * TP1_SELL_FRACTION;
-            // No vender más de lo que tenemos
             const actualSellQty = Math.min(sellQty, pos.quantity);
             const sellValue = actualSellQty * currentPrice;
             const profit = sellValue - (actualSellQty * pos.entryPrice);
             balance += sellValue;
             pos.quantity -= actualSellQty;
             pos.tp1Hit = true;
-            events.push({
-                type: 'TP1',
-                symbol: pos.tokenSymbol,
-                price: currentPrice,
-                profit: profit,
-                balance: balance
-            });
-            console.log(`🎯 TP1 (20%) en ${pos.tokenSymbol}: vendido ${actualSellQty.toFixed(4)} a ${currentPrice} USDC, ganancia ${profit.toFixed(2)} USDC. Saldo: ${balance.toFixed(2)} USDC`);
+            events.push({ type: 'TP1', symbol: pos.tokenSymbol, price: currentPrice, profit, balance });
+            console.log(`🎯 TP1 (20%) en ${pos.tokenSymbol}: vendido ${actualSellQty.toFixed(4)} a ${currentPrice}, ganancia ${profit.toFixed(2)}. Saldo: ${balance.toFixed(2)}`);
             if (pos.quantity <= 0.000001) {
                 closed = true;
                 sellPrice = currentPrice;
@@ -99,7 +85,7 @@ async function updatePositions(currentPrices) {
             }
         }
 
-        // ---- TP2: +30% -> vender TODO lo que quede (el resto de la posición) ----
+        // TP2: +30% vender todo lo que quede
         if (!closed && !pos.tp2Hit && currentPrice >= pos.entryPrice * (1 + TP2_PERCENT)) {
             const sellQty = pos.quantity;
             if (sellQty > 0) {
@@ -108,14 +94,8 @@ async function updatePositions(currentPrices) {
                 balance += sellValue;
                 pos.quantity = 0;
                 pos.tp2Hit = true;
-                events.push({
-                    type: 'TP2',
-                    symbol: pos.tokenSymbol,
-                    price: currentPrice,
-                    profit: profit,
-                    balance: balance
-                });
-                console.log(`🎯 TP2 (30%) en ${pos.tokenSymbol}: vendido ${sellQty.toFixed(4)} a ${currentPrice} USDC, ganancia ${profit.toFixed(2)} USDC. Saldo: ${balance.toFixed(2)} USDC`);
+                events.push({ type: 'TP2', symbol: pos.tokenSymbol, price: currentPrice, profit, balance });
+                console.log(`🎯 TP2 (30%) en ${pos.tokenSymbol}: vendido ${sellQty.toFixed(4)} a ${currentPrice}, ganancia ${profit.toFixed(2)}. Saldo: ${balance.toFixed(2)}`);
                 closed = true;
                 sellPrice = currentPrice;
                 reason = 'TP2';
@@ -123,38 +103,26 @@ async function updatePositions(currentPrices) {
             }
         }
 
-        // ---- Stop Loss Fijo (-15%) ----
+        // Stop fijo -15%
         if (!closed && currentPrice <= fixedStopPrice) {
             const sellValue = pos.quantity * currentPrice;
             const profit = sellValue - (pos.quantity * pos.entryPrice);
             balance += sellValue;
-            events.push({
-                type: 'STOP_LOSS_FIJO',
-                symbol: pos.tokenSymbol,
-                price: currentPrice,
-                profit: profit,
-                balance: balance
-            });
-            console.log(`🛑 STOP FIJO (-15%) en ${pos.tokenSymbol}: cerrado a ${currentPrice} USDC, resultado ${profit.toFixed(2)} USDC. Saldo: ${balance.toFixed(2)} USDC`);
+            events.push({ type: 'STOP_LOSS_FIJO', symbol: pos.tokenSymbol, price: currentPrice, profit, balance });
+            console.log(`🛑 STOP FIJO (-15%) en ${pos.tokenSymbol}: cerrado a ${currentPrice}, resultado ${profit.toFixed(2)}. Saldo: ${balance.toFixed(2)}`);
             closed = true;
             sellPrice = currentPrice;
             reason = 'SL_FIJO';
             totalProfit = profit;
         }
 
-        // ---- Trailing Stop (-5% desde máximo) ----
+        // Trailing stop -5%
         if (!closed && trailingActive && currentPrice <= trailingStopPrice) {
             const sellValue = pos.quantity * currentPrice;
             const profit = sellValue - (pos.quantity * pos.entryPrice);
             balance += sellValue;
-            events.push({
-                type: 'TRAILING_STOP',
-                symbol: pos.tokenSymbol,
-                price: currentPrice,
-                profit: profit,
-                balance: balance
-            });
-            console.log(`🛑 TRAILING STOP (-5%) en ${pos.tokenSymbol}: cerrado a ${currentPrice} USDC (máximo ${pos.highestPrice}), resultado ${profit.toFixed(2)} USDC. Saldo: ${balance.toFixed(2)} USDC`);
+            events.push({ type: 'TRAILING_STOP', symbol: pos.tokenSymbol, price: currentPrice, profit, balance });
+            console.log(`🛑 TRAILING STOP (-5%) en ${pos.tokenSymbol}: cerrado a ${currentPrice} (máx ${pos.highestPrice}), resultado ${profit.toFixed(2)}. Saldo: ${balance.toFixed(2)}`);
             closed = true;
             sellPrice = currentPrice;
             reason = 'TRAILING';
@@ -168,7 +136,7 @@ async function updatePositions(currentPrices) {
                 closeReason: reason,
                 closeDate: new Date().toISOString(),
                 finalBalance: balance,
-                totalProfit: totalProfit
+                totalProfit
             });
             activePositions.splice(i, 1);
             i--;
@@ -177,7 +145,6 @@ async function updatePositions(currentPrices) {
     return events;
 }
 
-// Obtener estado actual
 function getStatus() {
     return {
         balance: balance,
@@ -192,7 +159,6 @@ function getStatus() {
     };
 }
 
-// Reiniciar simulación
 function resetPaper() {
     balance = INITIAL_BALANCE;
     activePositions = [];
